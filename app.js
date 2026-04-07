@@ -5,7 +5,17 @@ const { v4: uuidv4 } = require('uuid');
 const moment = require('moment');
 const fs = require('fs');
 const path = require('path');
-const FileDatabase = require('./database');
+
+// Database factory
+function getDatabase(storageType, dbPath) {
+  if (storageType === 'sqlite') {
+    const SqliteDatabase = require('./database');
+    return new SqliteDatabase(dbPath);
+  } else {
+    const JsonDatabase = require('./database-json');
+    return new JsonDatabase(dbPath);
+  }
+}
 
 class FileShareApp {
   constructor(options = {}) {
@@ -13,8 +23,8 @@ class FileShareApp {
     this.host = options.host || '0.0.0.0';
     this.baseUrl = options.baseUrl || `http://${this.host}:${this.port}`;
     this.uploadDir = options.uploadDir || './uploads';
-    this.dbPath = options.dbPath || './data/files.db';
-    this.expirationMinutes = options.expirationMinutes || 5;
+    this.dbPath = options.dbPath || './data/files.json';
+    this.storageType = options.storageType || 'json'; // 'json' or 'sqlite'
 
     // Ensure upload directory exists
     if (!fs.existsSync(this.uploadDir)) {
@@ -22,24 +32,12 @@ class FileShareApp {
     }
 
     // Initialize database
-    this.db = new FileDatabase(this.dbPath);
+    this.db = getDatabase(this.storageType, this.dbPath);
 
     // Initialize express app
     this.app = express();
     this.setupMiddleware();
     this.setupRoutes();
-
-    // Cleanup expired tokens periodically (every minute)
-    this.cleanupInterval = setInterval(async () => {
-      try {
-        const deleted = await this.db.cleanupExpiredTokens();
-        if (deleted > 0) {
-          console.log(`[${moment().format('YYYY-MM-DD HH:mm:ss')}] Cleaned up ${deleted} expired upload tokens`);
-        }
-      } catch (err) {
-        console.error('Cleanup error:', err);
-      }
-    }, 60000);
   }
 
   setupMiddleware() {
@@ -67,11 +65,8 @@ class FileShareApp {
   }
 
   setupRoutes() {
-    // Generate upload link
-    this.app.post('/api/generate-upload', this.handleGenerateUpload.bind(this));
-    
-    // Upload endpoint
-    this.app.post('/api/upload/:token', this.upload.single('file'), this.handleUpload.bind(this));
+    // Upload file - directly upload, no token needed
+    this.app.post('/api/upload', this.upload.single('file'), this.handleUpload.bind(this));
     
     // Download endpoint
     this.app.get('/api/download/:fileToken', this.handleDownload.bind(this));
@@ -79,9 +74,16 @@ class FileShareApp {
     // Download info endpoint (JSON)
     this.app.get('/api/info/:fileToken', this.handleInfo.bind(this));
     
+    // List all files
+    this.app.get('/api/list', this.handleList.bind(this));
+    
     // Health check
     this.app.get('/health', (req, res) => {
-      res.json({ status: 'ok', timestamp: Date.now() });
+      res.json({ 
+        status: 'ok', 
+        storage: this.storageType,
+        timestamp: Date.now() 
+      });
     });
   }
 
@@ -93,83 +95,28 @@ class FileShareApp {
     return req.socket.remoteAddress || req.ip;
   }
 
-  generateUploadCode(uploadUrl, platform) {
-    switch (platform.toLowerCase()) {
-      case 'linux':
-      case 'macos':
-      case 'curl':
-        return `# For Linux/macOS
-curl -X POST -F "file=@/path/to/your/file" "${uploadUrl}"`;
-      
-      case 'windows':
-      case 'powershell':
-        return `# For Windows PowerShell
-$filePath = "C:\\path\\to\\your\\file"
-$url = "${uploadUrl}"
-Invoke-RestMethod -Method Post -Uri $url -InFile $filePath -ContentType "multipart/form-data"`;
-      
-      default:
-        return `curl -X POST -F "file=@/path/to/your/file" "${uploadUrl}"`;
-    }
-  }
-
-  async handleGenerateUpload(req, res) {
-    try {
-      const { platform = 'linux' } = req.body;
-      const clientIp = this.getClientIp(req);
-      const uploadToken = uuidv4();
-      const expirationMs = this.expirationMinutes * 60 * 1000;
-
-      await this.db.createUploadToken(uploadToken, platform, clientIp, expirationMs);
-
-      const uploadUrl = `${this.baseUrl}/api/upload/${uploadToken}`;
-      const uploadCode = this.generateUploadCode(uploadUrl, platform);
-      const expiresAt = Date.now() + expirationMs;
-
-      res.json({
-        success: true,
-        upload_token: uploadToken,
-        upload_url: uploadUrl,
-        upload_code: uploadCode,
-        expires_at: expiresAt,
-        expires_at_human: moment(expiresAt).format('YYYY-MM-DD HH:mm:ss')
-      });
-    } catch (error) {
-      console.error('Generate upload error:', error);
-      res.status(500).json({ success: false, error: error.message });
-    }
-  }
-
   async handleUpload(req, res) {
     try {
-      const { token } = req.params;
       const clientIp = this.getClientIp(req);
-
-      // Check if token is valid
-      const uploadToken = await this.db.getValidUploadToken(token);
-      if (!uploadToken) {
-        return res.status(400).json({
-          success: false,
-          error: 'Invalid or expired upload token'
-        });
-      }
 
       if (!req.file) {
         return res.status(400).json({
           success: false,
-          error: 'No file provided'
+          error: 'No file provided. Use multipart/form-data with field name "file"'
         });
       }
 
       const fileToken = uuidv4();
-      const { originalname, path: storedPath, size } = req.file;
+      const { originalname, path: storedPath, size, mimetype } = req.file;
 
-      // Insert file record and mark token as used
-      await this.db.insertFile(fileToken, originalname, storedPath, size, token);
-      await this.db.markUploadTokenUsed(token, fileToken);
+      // Insert file record
+      await this.db.insertFile(fileToken, originalname, storedPath, size, clientIp);
 
       const downloadUrl = `${this.baseUrl}/api/download/${fileToken}`;
       const infoUrl = `${this.baseUrl}/api/info/${fileToken}`;
+
+      // Get file extension for type
+      const ext = path.extname(originalname).toLowerCase().replace(/^\./, '') || 'unknown';
 
       res.json({
         success: true,
@@ -178,6 +125,8 @@ Invoke-RestMethod -Method Post -Uri $url -InFile $filePath -ContentType "multipa
         original_name: originalname,
         file_size: size,
         file_size_human: this.formatFileSize(size),
+        file_type: ext,
+        content_type: mimetype,
         download_url: downloadUrl,
         info_url: infoUrl
       });
@@ -247,13 +196,43 @@ Invoke-RestMethod -Method Post -Uri $url -InFile $filePath -ContentType "multipa
         original_name: stats.original_name,
         file_size: stats.file_size,
         file_size_human: this.formatFileSize(stats.file_size),
-        download_count: stats.download_count,
+        file_type: stats.file_type || 'unknown',
+        download_count: stats.download_count || stats.total_downloads,
         upload_time: stats.upload_time,
         upload_time_human: moment(stats.upload_time).format('YYYY-MM-DD HH:mm:ss'),
+        upload_ip: stats.upload_ip,
         download_url: `${this.baseUrl}/api/download/${fileToken}`
       });
     } catch (error) {
       console.error('Info error:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
+  async handleList(req, res) {
+    try {
+      const files = await this.db.getAllFiles();
+      
+      // Add human readable info
+      const result = files.map(file => ({
+        file_token: file.file_token,
+        original_name: file.original_name,
+        file_size: file.file_size,
+        file_size_human: this.formatFileSize(file.file_size),
+        file_type: file.file_type || 'unknown',
+        download_count: file.download_count,
+        upload_time: file.upload_time,
+        upload_time_human: moment(file.upload_time).format('YYYY-MM-DD HH:mm:ss'),
+        download_url: `${this.baseUrl}/api/download/${file.file_token}`
+      }));
+
+      res.json({
+        success: true,
+        total: result.length,
+        files: result
+      });
+    } catch (error) {
+      console.error('List error:', error);
       res.status(500).json({ success: false, error: error.message });
     }
   }
@@ -276,20 +255,17 @@ Invoke-RestMethod -Method Post -Uri $url -InFile $filePath -ContentType "multipa
 ╚════════════════════════════════════════════════════════════╝
 
 Server running on: ${this.baseUrl}
+Storage: ${this.storageType}
 Database: ${this.dbPath}
 Upload directory: ${this.uploadDir}
-Default upload expiration: ${this.expirationMinutes} minutes
+Max file size: 100 MB
 
 API Endpoints:
-  POST /api/generate-upload - Generate upload link
-    Body: { "platform": "linux|macos|windows" }
-    Returns: upload_url and upload_code
-
-  POST /api/upload/:token - Upload file (use the generated code)
-  
+  POST /api/upload      - Upload file directly (multipart/form-data, field: file)
   GET  /api/download/:fileToken - Download file
-  GET  /api/info/:fileToken - Get file info and download stats
-  GET  /health - Health check
+  GET  /api/info/:fileToken     - Get file info and download stats
+  GET  /api/list         - List all uploaded files
+  GET  /health           - Health check
 
 Ready to accept uploads!
 `);
@@ -299,9 +275,6 @@ Ready to accept uploads!
   }
 
   stop() {
-    if (this.cleanupInterval) {
-      clearInterval(this.cleanupInterval);
-    }
     if (this.server) {
       this.server.close();
     }

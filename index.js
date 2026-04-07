@@ -8,8 +8,8 @@ const { spawn } = require('child_process');
 
 program
   .name('file-share')
-  .description('CLI-based file sharing platform with SQLite database')
-  .version('1.0.0');
+  .description('CLI-based file sharing platform, JSON/SQLite storage supported')
+  .version('2.0.0');
 
 program
   .command('start')
@@ -18,8 +18,8 @@ program
   .option('-h, --host <host>', 'Host to bind to', '0.0.0.0')
   .option('-b, --base-url <url>', 'Base URL for download links (e.g. http://yourdomain.com)')
   .option('-d, --upload-dir <dir>', 'Upload directory', './uploads')
-  .option('--db-path <path>', 'SQLite database path', './data/files.db')
-  .option('-e, --expiration <minutes>', 'Upload link expiration in minutes', '5')
+  .option('--db-path <path>', 'Database file path', './data/files.json')
+  .option('-s, --storage <type>', 'Storage type: json or sqlite', 'json')
   .option('--daemon', 'Run in background (daemon mode)', false)
   .action(async (options) => {
     const config = {
@@ -28,8 +28,12 @@ program
       baseUrl: options.baseUrl || `http://${options.host}:${options.port}`,
       uploadDir: path.resolve(options.uploadDir),
       dbPath: path.resolve(options.dbPath),
-      expirationMinutes: parseInt(options.expiration)
+      storageType: options.storage
     };
+
+    if (options.storage === 'sqlite' && !options.dbPath.includes('.db')) {
+      config.dbPath = path.resolve('./data/files.db');
+    }
 
     if (options.daemon) {
       // Run in background
@@ -50,7 +54,7 @@ program
         '--base-url', options.baseUrl || `http://${options.host}:${options.port}`,
         '--upload-dir', options.uploadDir,
         '--db-path', options.dbPath,
-        '--expiration', options.expiration
+        '--storage', options.storage
       ], {
         detached: true,
         stdio: ['ignore', out, err]
@@ -129,18 +133,6 @@ program
     } catch (error) {
       console.log('Server is not running (PID file exists but process is dead)');
     }
-  });
-
-program
-  .command('cleanup')
-  .description('Cleanup expired upload tokens')
-  .option('--db-path <path>', 'SQLite database path', './data/files.db')
-  .action((options) => {
-    const FileDatabase = require('./database');
-    const db = new FileDatabase(path.resolve(options.dbPath));
-    const deleted = db.cleanupExpiredTokens();
-    console.log(`Cleaned up ${deleted} expired upload tokens`);
-    db.close();
   });
 
 program.parse();
