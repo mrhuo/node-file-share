@@ -30,10 +30,14 @@ class FileShareApp {
     this.setupRoutes();
 
     // Cleanup expired tokens periodically (every minute)
-    this.cleanupInterval = setInterval(() => {
-      const deleted = this.db.cleanupExpiredTokens();
-      if (deleted > 0) {
-        console.log(`[${moment().format('YYYY-MM-DD HH:mm:ss')}] Cleaned up ${deleted} expired upload tokens`);
+    this.cleanupInterval = setInterval(async () => {
+      try {
+        const deleted = await this.db.cleanupExpiredTokens();
+        if (deleted > 0) {
+          console.log(`[${moment().format('YYYY-MM-DD HH:mm:ss')}] Cleaned up ${deleted} expired upload tokens`);
+        }
+      } catch (err) {
+        console.error('Cleanup error:', err);
       }
     }, 60000);
   }
@@ -116,7 +120,7 @@ Invoke-RestMethod -Method Post -Uri $url -InFile $filePath -ContentType "multipa
       const uploadToken = uuidv4();
       const expirationMs = this.expirationMinutes * 60 * 1000;
 
-      this.db.createUploadToken(uploadToken, platform, clientIp, expirationMs);
+      await this.db.createUploadToken(uploadToken, platform, clientIp, expirationMs);
 
       const uploadUrl = `${this.baseUrl}/api/upload/${uploadToken}`;
       const uploadCode = this.generateUploadCode(uploadUrl, platform);
@@ -142,7 +146,7 @@ Invoke-RestMethod -Method Post -Uri $url -InFile $filePath -ContentType "multipa
       const clientIp = this.getClientIp(req);
 
       // Check if token is valid
-      const uploadToken = this.db.getValidUploadToken(token);
+      const uploadToken = await this.db.getValidUploadToken(token);
       if (!uploadToken) {
         return res.status(400).json({
           success: false,
@@ -161,8 +165,8 @@ Invoke-RestMethod -Method Post -Uri $url -InFile $filePath -ContentType "multipa
       const { originalname, path: storedPath, size } = req.file;
 
       // Insert file record and mark token as used
-      this.db.insertFile(fileToken, originalname, storedPath, size, token);
-      this.db.markUploadTokenUsed(token, fileToken);
+      await this.db.insertFile(fileToken, originalname, storedPath, size, token);
+      await this.db.markUploadTokenUsed(token, fileToken);
 
       const downloadUrl = `${this.baseUrl}/api/download/${fileToken}`;
       const infoUrl = `${this.baseUrl}/api/info/${fileToken}`;
@@ -190,7 +194,7 @@ Invoke-RestMethod -Method Post -Uri $url -InFile $filePath -ContentType "multipa
       const userAgent = req.get('User-Agent') || '';
 
       // Get file info
-      const file = this.db.getFile(fileToken);
+      const file = await this.db.getFile(fileToken);
       if (!file) {
         return res.status(404).json({
           success: false,
@@ -207,8 +211,8 @@ Invoke-RestMethod -Method Post -Uri $url -InFile $filePath -ContentType "multipa
       }
 
       // Log download and increment count
-      this.db.incrementDownloadCount(fileToken);
-      this.db.logDownload(fileToken, clientIp, userAgent);
+      await this.db.incrementDownloadCount(fileToken);
+      await this.db.logDownload(fileToken, clientIp, userAgent);
 
       // Send file
       res.setHeader(
@@ -228,7 +232,7 @@ Invoke-RestMethod -Method Post -Uri $url -InFile $filePath -ContentType "multipa
   async handleInfo(req, res) {
     try {
       const { fileToken } = req.params;
-      const stats = this.db.getDownloadStats(fileToken);
+      const stats = await this.db.getDownloadStats(fileToken);
       
       if (!stats) {
         return res.status(404).json({
@@ -262,7 +266,8 @@ Invoke-RestMethod -Method Post -Uri $url -InFile $filePath -ContentType "multipa
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   }
 
-  start() {
+  async start() {
+    await this.db.ready();
     return new Promise((resolve) => {
       this.server = this.app.listen(this.port, this.host, () => {
         console.log(`
