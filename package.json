@@ -1,0 +1,27 @@
+{
+  "name": "file-share-platform",
+  "version": "1.0.0",
+  "description": "CLI-based file sharing platform with SQLite database",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "file-sharing",
+    "upload",
+    "download",
+    "sqlite",
+    "cli"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "better-sqlite3": "^9.4.3",
+    "cors": "^2.8.5",
+    "multer": "^1.4.5-lts.1",
+    "commander": "^12.0.0",
+    "moment": "^2.30.1",
+    "uuid": "^9.0.1"
+  }
+}
