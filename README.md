@@ -14,9 +14,26 @@
 
 ## 安装
 
+### 环境要求
+
+- Node.js >= 14
+- 如果是 CentOS 7，需要升级 GCC 才能编译 sqlite3：
+
 ```bash
-# 进入项目目录
-cd file-share-platform
+# 升级 GCC（CentOS 7 需要）
+yum install -y centos-release-scl
+yum install -y devtoolset-9-gcc devtoolset-9-gcc-c++
+scl enable devtoolset-9 bash
+
+# 然后再安装依赖
+source /opt/rh/devtoolset-9/enable
+npm install
+```
+
+```bash
+# 克隆项目
+git clone https://github.com/mrhuo/node-file-share.git
+cd node-file-share
 
 # 安装依赖
 npm install
@@ -267,8 +284,8 @@ After=network.target
 [Service]
 Type=simple
 User=your-user
-WorkingDirectory=/path/to/file-share-platform
-ExecStart=/usr/bin/node /path/to/file-share-platform/index.js start --port 3000 --host 0.0.0.0 --base-url http://your-domain.com
+WorkingDirectory=/path/to/node-file-share
+ExecStart=/usr/bin/node /path/to/node-file-share/index.js start --port 3000 --host 0.0.0.0 --base-url http://your-domain.com
 Restart=always
 
 [Install]
@@ -292,6 +309,22 @@ limits: {
   fileSize: 100 * 1024 * 1024  // 修改这里
 }
 ```
+
+## 解决 CentOS 7 编译问题
+
+CentOS 7 默认的 GCC 4.8.5 太老，不支持 C++14，需要升级 GCC：
+
+```bash
+# 安装新的 GCC
+yum install -y centos-release-scl
+yum install -y devtoolset-9-gcc devtoolset-9-gcc-c++ make
+
+# 启用新的 GCC 然后安装依赖
+source /opt/rh/devtoolset-9/enable
+npm install
+```
+
+升级 GCC 后就可以正常编译了。
 
 ## License
 
